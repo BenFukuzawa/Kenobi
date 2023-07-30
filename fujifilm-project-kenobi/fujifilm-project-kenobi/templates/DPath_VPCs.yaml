@@ -1,0 +1,613 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Provision VPC with 2 private subnets, AWS Managed Active Directory, a bucket to store the code role required to access it.
+#© 2023 Amazon Web Services, Inc. or its affiliates. All Rights Reserved.  
+#This AWS Content is provided subject to the terms of the AWS Customer Agreement available at  
+#http://aws.amazon.com/agreement or other written agreement between Customer and either
+#Amazon Web Services, Inc. or Amazon Web Services EMEA SARL or both.
+#This file is Amazon Web Services Content and may not be duplicated or distributed without permission.
+
+Metadata:
+# The optional "Metadata" section can be used to include arbitrary objects that provide
+# details about the template.
+# For more details, see: 
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/metadata-section-structure.html
+
+  # "AWS::CloudFormation::Interface" defines the appearanace of the form presented in the console.
+
+    # "ParameterGroupscreates" defines the subsections in the form to separate inputs logically - 
+    # - note the "label: Default:" entries provide the names of the sections, and "Parameters"
+    # lists which input parameters are placed in that group. 
+
+    # "ParameterLabels" can be used to provide a minimal description of the parameter -
+    # - note that in the "Parameters" section, outside of "Metadata" is where the parameters along
+    # with there constraints and a full description are defined.
+
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: Shared VPC Networking Settings
+      Parameters:
+      - pSharedVPC
+      - pSharedPrivateSubnetA
+      - pSharedPrivateSubnetB
+    - Label:
+        default: App VPC Networking Settings
+      Parameters:
+      - pAppVPC
+    # End of Networking Parameter Groups
+    - Label:
+        default: Active Directory Settings
+      Parameters:
+      - pDomainName
+      - pMicrosoftADShortName
+      - pMicrosoftADPW
+      - pEdition
+      - pCreateAlias
+      - pEnableSingleSignOn
+    # End of Active Directory Parameter Groups
+
+    ParameterLabels:
+      pSharedVPC:
+        default: App VPC CIDR Range
+      pSharedPrivateSubnetA:
+        default: Private Subnet A
+      pSharedPrivateSubnetB:
+        default: Private Subnet B
+      pAppVPC:
+        default: App VPC CIDR Range
+      # End of Networking Parameter Labels
+      pDomainName:
+        default: Name
+      pMicrosoftADShortName:
+        default: Short Name
+      pMicrosoftADPW:
+        default: Active Directory Admin Password
+      pEdition:
+        default: Edition
+      pCreateAlias:
+        default: Create Alias
+      pEnableSingleSignOn:
+        default: Enable Single Sign On
+      # End of Active Directory Parameter Labels
+
+Parameters:
+# The "Parameters" section defines the input parameters' characteristics and constraints
+
+  pSharedVPC:
+    Description: >
+      Choose a VPC CIDR range which is not already use elsewhere in your network address space.
+    Type: String
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/(1[6-9]|2[0-8]))$
+    ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16-28
+    Default: 10.1.0.0/16
+
+  pSharedPrivateSubnetA:
+    Description: >
+      Choose a Subnet CIDR range for this Private Subnet A within the VPC network address space.
+    Type: String
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/(1[6-9]|2[0-8]))$
+    ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16-28
+    Default: 10.1.1.0/24
+  
+  pSharedPrivateSubnetB:
+    Description: >
+      Choose a Subnet CIDR range for this Private Subnet B within the VPC network address space.
+    Type: String
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/(1[6-9]|2[0-8]))$
+    ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16-28
+    Default: 10.1.2.0/24
+
+  pAppVPC:
+    Description: >
+      Choose a VPC CIDR range which is not already use elsewhere in your network address space.
+    Type: String
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/(1[6-9]|2[0-8]))$
+    ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16-28
+    Default: 10.2.0.0/16
+  
+  # End of Networking Parameters  
+
+  pEdition:
+    Description: >
+      The AWS Microsoft AD edition. Valid values include Standard and
+      Enterprise. The default is Enterprise.
+    Type: String
+    Default: Enterprise
+    AllowedValues:
+    - Standard
+    - Enterprise
+
+  pDomainName:
+    Description: >
+      The fully qualified name for the Microsoft Active Directory
+      in AWS, such as corp.example.com. The name doesn't need to be
+      publicly resolvable; it will resolve inside your VPC only.
+    Type: String
+    Default: corp.example.com
+  
+  pMicrosoftADShortName:
+    Description: >
+      The NetBIOS name for your domain, such as CORP. If you don't specify
+      a value, AWS Directory Service uses the first part of your directory
+      DNS server name. For example, if your directory DNS server name is
+      corp.example.com, AWS Directory Service specifies CORP for the NetBIOS
+      name.
+    Type: String
+    Default: corp
+
+  pEnableSingleSignOn:
+    Description: >
+      Whether to enable single sign-on for a Microsoft Active
+      Directory in AWS. Single sign-on allows users in your
+      directory to access certain AWS services from a computer
+      joined to the directory without having to enter their
+      credentials separately. If you don't specify a value,
+      AWS CloudFormation disables single sign-on by default.
+      If enabling SSO, then "Create Alias" need to be set to true.
+    Type: String
+    AllowedValues:
+    - 'true'
+    - 'false'
+    Default: 'false'
+  
+  pCreateAlias:
+    Description: >
+      A unique alias to assign to the Microsoft Active Directory in AWS.
+      AWS Directory Service uses the alias to construct the access URL for
+      the directory, such as http://alias.awsapps.com. By default, AWS
+      CloudFormation does not create an alias.
+    Type: String
+    AllowedValues:
+    - 'true'
+    - 'false'
+    Default: 'false'
+  
+  # End of Active Directory Parameters
+
+Conditions:
+# The conditions section for activation of code on input through parameters
+  cAlias: !Equals [ !Ref pCreateAlias, 'true' ]
+
+Resources:
+# The Resources section describes the AWS services to be deployed
+# and their configuration using the parameters and conditions 
+# defined above.
+
+  # Store password for the default administrative user, Admin
+  rDirectorySecret:
+    Type: 'AWS::SecretsManager::Secret'
+    Properties:
+      Name: DirectoryServiceSecret
+      KmsKeyId: !GetAtt rCMK.Arn
+      Description: Generate password for AD server
+      GenerateSecretString: 
+        SecretStringTemplate: '{"username":"Admin"}'
+        GenerateStringKey: password
+      Tags:
+        -
+          Key: AppName
+          Value: DPath
+
+
+  # Create Virtual Private Clouc
+  rSharedVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref pSharedVPC
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+      - Key: Name
+        Value: SharedVPC
+
+  # Create two private subnets to host Directory Service domain controller
+  rPrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref rSharedVPC
+      CidrBlock: !Ref pSharedPrivateSubnetA
+      AvailabilityZone: !Select [ 0, !GetAZs ] 
+      Tags:
+      - Key: Name
+        Value: !Sub SharedVPC-Private-A
+  rPrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref rSharedVPC
+      CidrBlock: !Ref pSharedPrivateSubnetB
+      AvailabilityZone: !Select [ 1, !GetAZs ] 
+      Tags:
+      - Key: Name
+        Value: SharedVPC-Private-B
+              
+  # Private Route Table for both private subnets A and B, followed by pre-configured routes to two peers:
+  rSharedVPCPrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref rSharedVPC
+      Tags:
+      - Key: Name
+        Value: Private-RouteTable
+  rSharedPeerRoute:   # Peering RT:
+    Type: AWS::EC2::Route
+    DependsOn: rVPCPeer
+    Properties:
+      RouteTableId: !Ref rSharedVPCPrivateRouteTable
+      DestinationCidrBlock: !Ref pAppVPC
+      VpcPeeringConnectionId: !Ref rVPCPeer  
+
+
+  # Attach Private Route Table to Subnets:  
+  PrivateSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref rPrivateSubnetA
+      RouteTableId: !Ref rSharedVPCPrivateRouteTable
+  PrivateSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref rPrivateSubnetB
+      RouteTableId: !Ref rSharedVPCPrivateRouteTable
+
+  # Active Directory Deployment:
+  rMSDirectory:
+    Type: AWS::DirectoryService::MicrosoftAD
+    Properties:
+      CreateAlias: !Ref pCreateAlias
+      Edition: !Ref pEdition
+      EnableSso: !Ref pEnableSingleSignOn
+      Name: !Ref pDomainName
+      Password: !Join ['', ['{{resolve:secretsmanager:', !Ref rDirectorySecret , ':SecretString:password}}']]
+      ShortName: !Join ['', ['{{resolve:secretsmanager:', !Ref rDirectorySecret , ':SecretString:username}}']]
+      VpcSettings:
+        SubnetIds:
+        - !Ref rPrivateSubnetA
+        - !Ref rPrivateSubnetB
+        VpcId: !Ref rSharedVPC
+  
+  # Encryption for S3 
+  rCMK:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Delete
+    Properties: 
+      EnableKeyRotation: true
+      MultiRegion: false
+      KeyPolicy:
+        Version: 2012-10-17
+        Id: cmk-policy
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: Enable Logs Permissions
+            Effect: Allow
+            Principal: 
+              Service: !Sub logs.${AWS::Region}.amazonaws.com
+            Effect: Allow
+            Action:
+              - 'kms:Encrypt*'
+              - 'kms:Decrypt*'
+              - 'kms:ReEncrypt*'
+              - 'kms:GenerateDataKey*'
+              - 'kms:Describe*'
+            Resource: '*'
+            Condition:
+              ArnLike: 
+                "kms:EncryptionContext:aws:logs:arn": !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+
+
+  # Create unique bucket to store the assets used for deployment on EC2 instance and the logging bucket for access logs 
+  rAssetsS3Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Join [ "-", [ "ff-dpath-app-bucket", !Select [2, !Split ['/', !Ref AWS::StackId]] ] ] 
+      LoggingConfiguration: 
+        DestinationBucketName: !Ref rLoggingBucket
+        LogFilePrefix: assets-bucket-access-logs
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  rLoggingBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  rLoggingBucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref rLoggingBucket
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - 's3:PutObject'
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Resource: !Join ['', ['arn:aws:s3:::', !Ref rLoggingBucket, '/*']]
+            Condition:
+              ArnLike: 
+                'aws:SourceArn': !GetAtt rAssetsS3Bucket.Arn
+              StringEquals:
+                'aws:SourceAccount': !Sub '${AWS::AccountId}'
+
+  rAssetsS3BucketEnforceHTTPS:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref rAssetsS3Bucket
+      PolicyDocument: {
+          "Id": "ExamplePolicy",
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowSSLRequestsOnly",
+              "Action": "s3:*",
+              "Effect": "Deny",
+              "Resource": [
+                Fn::Join: ["", ["arn:aws:s3:::", !Ref rAssetsS3Bucket, "/*"]]
+              ],
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              },
+              "Principal": "*"
+            }
+          ]
+        }
+
+
+  # Create role to attach to EC2 instances that need to retrive data from the assets bucket above
+  rEC2InstanceS3ReadAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: EC2InstanceS3ReadAccessRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3ReadAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt rAssetsS3Bucket.Arn
+                  - !Join ['',[!GetAtt rAssetsS3Bucket.Arn,'/*']]
+
+
+# The following creates the VPC where the DPath app EC2 instances are going to be deployed
+
+# Create App VPC
+  rAppVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref pAppVPC
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+      - Key: Name
+        Value:  App-VPC
+# Create App VPC Public route table + entries
+  rAppPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref rAppVPC
+      Tags:
+      - Key: Name
+        Value: AppVPC-Public-RouteTable
+  rPublicRoute1:   # Public RT includes routing to IGW:
+    Type: AWS::EC2::Route
+    DependsOn: rAttachGateway
+    Properties:
+      RouteTableId: !Ref rAppPublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref rAppInternetGateway
+  rAppPublicPeerRoute:   # Peering RT:
+    Type: AWS::EC2::Route
+    DependsOn: rVPCPeer
+    Properties:
+      RouteTableId: !Ref rAppPublicRouteTable
+      DestinationCidrBlock: !Ref pSharedVPC
+      VpcPeeringConnectionId: !Ref rVPCPeer
+
+  # Create App VPC Private route table + entries
+  rAppPrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref rAppVPC
+      Tags:
+      - Key: Name
+        Value: AppVPC-Private-RouteTable
+  rAppPrivatePeerRoute:   # Peering RT:
+    Type: AWS::EC2::Route
+    DependsOn: rVPCPeer
+    Properties:
+      RouteTableId: !Ref rAppPrivateRouteTable
+      DestinationCidrBlock: !Ref pSharedVPC
+      VpcPeeringConnectionId: !Ref rVPCPeer
+ 
+  # Crete IGW for internet access, Attach to VPC:      
+  rAppInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    DependsOn: rAppVPC
+  rAttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref rAppVPC
+      InternetGatewayId: !Ref rAppInternetGateway
+ 
+  # Create VPC Peering connection between the shared services VPC and the DPath App VPC
+  rVPCPeer:
+    Type: AWS::EC2::VPCPeeringConnection
+    Properties:
+      VpcId: !Ref rAppVPC
+      PeerVpcId: !Ref rSharedVPC
+  
+  # Flow Logs
+  rLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub 'VPCFlowLogs-${AWS::Region}'
+      KmsKeyId: !GetAtt rCMK.Arn
+      RetentionInDays: 3
+
+  rFlowLogRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: 'vpc-flow-logs.amazonaws.com'
+          Action: 'sts:AssumeRole'
+      Policies:
+      - PolicyName: 'flowlogs-policy'
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - 'logs:CreateLogStream'
+            - 'logs:PutLogEvents'
+            - 'logs:DescribeLogGroups'
+            - 'logs:DescribeLogStreams'
+            Resource: !GetAtt rLogGroup.Arn
+
+  rVPCFlowLogSharedVPC:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      TrafficType: ALL
+      DeliverLogsPermissionArn: !GetAtt rFlowLogRole.Arn
+      LogGroupName: !Ref rLogGroup
+      ResourceType: VPC
+      ResourceId: !Ref rSharedVPC
+
+  rVPCFlowLogAppVPC:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      TrafficType: ALL
+      DeliverLogsPermissionArn: !GetAtt rFlowLogRole.Arn
+      LogGroupName: !Ref rLogGroup
+      ResourceType: VPC
+      ResourceId: !Ref rAppVPC
+
+Outputs:
+# This section describes information that is going to be produced by
+# the stack when its configuration and deploment are completed.
+# Export values can be imported by other stacks to gain access to 
+# resources created by this stack.
+
+  SharedVPC:
+    Description: ID of VPC where shared services are available  
+    Value: !Ref rSharedVPC
+    Export:
+      Name: !Sub "eSharedVPCID"
+  SharedVPCCIDR:
+    Description: CIDR range of VPC where shared services are available
+    Value: !GetAtt rSharedVPC.CidrBlock
+    Export:
+      Name: !Sub "eSharedVPCCIDR"
+  AppVPC:
+    Description: ID of VPC where DPath demo applications will be deployed
+    Value: !Ref rAppVPC
+    Export:
+      Name: !Sub "eAppVPCID"
+  AppVPCCIDR:
+    Description: CIDR range of VPC where DPath demo applications will be deployed
+    Value: !GetAtt rAppVPC.CidrBlock
+    Export:
+      Name: !Sub "eAppVPCCIDR"
+  SharedVPCPrivateSubnetA:
+    Description: Shared VPC Private Subnet A
+    Value: !Ref rPrivateSubnetA
+    Export:
+      Name: !Sub "eSharedVPCPrivSubnetA"
+  SharedVPCPrivateSubnetB:
+    Description: Shared VPC Private Subnet B
+    Value: !Ref rPrivateSubnetB
+    Export:
+      Name: !Sub "eSharedVPCPrivSubnetB"         
+  SharedVPCRouteTable:
+    Description: Shared VPC Route Table ID
+    Value: !Ref rSharedVPCPrivateRouteTable
+    Export:
+      Name: !Sub "eSharedVPCRouteTable"
+  AppVPCRouteTable:
+    Description: DPath app VPC Route Table ID
+    Value: !Ref rAppPublicRouteTable
+    Export:
+      Name: !Sub "eAppVPCRouteTable"
+  DirectoryID:
+    Description: ID of the MS Directory in the Shared VPC
+    Value: !Ref rMSDirectory
+    Export:
+      Name: !Sub "eMSDirectoryID"
+  DirectoryName:
+    Description: Name of the MS Directory domain
+    Value: !Ref pDomainName
+    Export:
+      Name: !Sub "eMSDirectoryName"
+  PrimaryDNS:
+    Description: Primary DNS IP of the MS Directory
+    Value: !Select [ '0', !GetAtt rMSDirectory.DnsIpAddresses ]
+    Export:
+      Name: !Sub "eMSDirectoryDNSPrim"
+  SecondaryDNS:
+    Description: Secondary DNS IP of the MS Directory
+    Value: !Select [ '1', !GetAtt rMSDirectory.DnsIpAddresses ]
+    Export:
+      Name: !Sub "eMSDirectoryDNSSecond"
+  DirectoryAlias:
+    Description: URL for the alias
+    Condition: cAlias
+    Value: !GetAtt rMSDirectory.Alias
+    Export:
+      Name: !Sub "eMSDirectoryAlias"
+  DPathAssetsS3Bucket:
+    Description: Bucket containing the code which will be referenced by the EC2 instance
+    Value: !GetAtt rAssetsS3Bucket.Arn
+    Export:
+      Name: !Sub "eAssetsS3Bucket"
+  DPathEC2InstanceS3ReadAccessRole:
+    Description: Role used by EC2 instance to access the AssetsS3Bucket
+    Value: !GetAtt rEC2InstanceS3ReadAccessRole.Arn
+    Export: 
+      Name: !Sub "eEC2InstanceS3ReadAccessRole"
+  DPathDirectoryServiceSecret:
+    Value:
+      Fn::Select:
+      - '0'
+      - Fn::Split:
+        - "-"
+        - Fn::Select:
+          - '6'
+          - Fn::Split:
+            - ":"
+            - Ref: rDirectorySecret
+    Description: The secret name for the Active Directory default user
+    Export:
+      Name: eDirectorySecret
+  VPCPeerId:
+    Description: VPC Peer ID
+    Value: !GetAtt rVPCPeer.Id
+    Export:
+      Name: !Sub "eVPCPeer"
+

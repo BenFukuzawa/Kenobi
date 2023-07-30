@@ -1,0 +1,582 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Provision of subnets, EC2 instance and all other supporting services needed for ONE  App deployment - it requires the existance of one single app.
+#© 2023 Amazon Web Services, Inc. or its affiliates. All Rights Reserved.  
+#This AWS Content is provided subject to the terms of the AWS Customer Agreement available at  
+#http://aws.amazon.com/agreement or other written agreement between Customer and either
+#Amazon Web Services, Inc. or Amazon Web Services EMEA SARL or both.
+#This file is Amazon Web Services Content and may not be duplicated or distributed without permission.
+
+
+Parameters:
+  pAppPubSubnetCIDR1:
+    Type: String
+    Description: The app subnet range CIDR
+    Default: 10.2.1.0/24
+  pAppPubSubnetCIDR2:
+    Type: String
+    Description: The app subnet range CIDR
+    Default: 10.2.2.0/24
+  pAppPrivSubnetCIDR1:
+    Type: String
+    Description: The app subnet range CIDR
+    Default: 10.2.3.0/24
+  pAppPrivSubnetCIDR2:
+    Type: String
+    Description: The app subnet range CIDR
+    Default: 10.2.4.0/24
+  pKeyName:
+    Type: String
+    Description: PEM Keyname
+    Default: windows_pem
+  pAppHostedZone:
+    Type: String
+    Description: ID string of the Route53 hosted zone
+  pAppDemoDomain:
+    Type: String
+    Description: full domain where the subdomain will be created
+  pAppDemoSubDomain:
+    Type: String
+    Description: subdomain for the application (to be prepended to the domain)
+  pCertificate:
+    Type: String
+    Description: Certificate ARN
+
+
+Resources:
+# Adding PUBLIC subnets to the App VPC (two are required for load balancer)
+  rAppPublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !ImportValue eAppVPCID
+      CidrBlock: !Ref pAppPubSubnetCIDR1
+      AvailabilityZone: !Select [ 0, !GetAZs ]
+      MapPublicIpOnLaunch: "false"
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-AppPubSubnet1
+
+  rAppPublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !ImportValue eAppVPCID
+      CidrBlock: !Ref pAppPubSubnetCIDR2
+      AvailabilityZone: !Select [ 1, !GetAZs ]
+      MapPublicIpOnLaunch: "false" 
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-AppPubSubnet2
+
+# Associating the imported PUBLIC route table to the PUBLIC subnets
+  rAppPublicSubnetRouteTableAssociation1:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      SubnetId: !Ref rAppPublicSubnet1
+      RouteTableId: !ImportValue eAppVPCRouteTable
+
+  rAppPublicSubnetRouteTableAssociation2:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      SubnetId: !Ref rAppPublicSubnet2
+      RouteTableId: !ImportValue eAppVPCRouteTable
+
+# Adding PRIVATE subnet to the App VPC - this is where the app instance will sit in
+  rAppPrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      MapPublicIpOnLaunch: "false"
+      VpcId: !ImportValue eAppVPCID
+      CidrBlock: !Ref pAppPrivSubnetCIDR1
+      AvailabilityZone: !Select [ 0, !GetAZs ] 
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-AppPrivSubnet1
+# Adding PRIVATE subnet 2 to the App VPC - this will be empty but is needed for R53 resolvers
+  rAppPrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !ImportValue eAppVPCID
+      CidrBlock: !Ref pAppPrivSubnetCIDR2
+      AvailabilityZone: !Select [ 1, !GetAZs ] 
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-AppPrivSubnet2
+# App PRIVATE subnet route table + entries
+  rAppPrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !ImportValue eAppVPCID
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-AppPrivRouteTable
+# Associating the PRIVATE route table to the PRIVATE subnet 1
+  rAppPrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref rAppPrivateSubnet1
+      RouteTableId: !Ref rAppPrivateRouteTable
+# Associating the PRIVATE route table to the PRIVATE subnet 2
+  rAppPrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref rAppPrivateSubnet2
+      RouteTableId: !Ref rAppPrivateRouteTable
+
+# NAT Gateway for the PRIVATE subnet
+  rAppNATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt rAppNATGatewayEIP.AllocationId
+      SubnetId: !Ref rAppPublicSubnet1
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-AppNATGateway
+  rAppNATGatewayEIP:
+   Type: AWS::EC2::EIP
+   Properties:
+      Domain: vpc
+  rAppNATGatewayRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref rAppPrivateRouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      NatGatewayId: !Ref rAppNATGateway
+
+# Private Subnet route table entry to SharedVPC
+  rSharedPeerRoute:   # Peering RT:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref rAppPrivateRouteTable
+      DestinationCidrBlock: !ImportValue eSharedVPCCIDR
+      VpcPeeringConnectionId: !ImportValue eVPCPeer
+
+
+# Security group for the Route53 Resolver
+  rRoute53ResolverSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow EC2 clients access to R53 Resolver
+      VpcId: !ImportValue eAppVPCID
+      SecurityGroupEgress:
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: !ImportValue eSharedVPCCIDR
+          Description: Allow Route 53 traffic to AD
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: !ImportValue eSharedVPCCIDR
+          Description: Allow Route 53 resolver to AD
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          SourceSecurityGroupId: !Ref rAppInstanceSecurityGroup
+          FromPort: 53
+          ToPort: 53
+          Description: "Allow DNS traffic - TCP 53"
+        - IpProtocol: udp
+          SourceSecurityGroupId: !Ref rAppInstanceSecurityGroup
+          FromPort: 53
+          ToPort: 53
+          Description: "Allow DNS traffic - UDP 53"
+
+# Route53 Outbound Resolver
+  rRoute53OutboundResolver:
+    Type: AWS::Route53Resolver::ResolverEndpoint
+    Properties:
+      Direction: OUTBOUND
+      IpAddresses: 
+        - SubnetId: !Ref rAppPrivateSubnet1
+        - SubnetId: !Ref rAppPrivateSubnet2
+      Name: R53OutboundEndpoint
+      SecurityGroupIds: 
+        - !Ref rRoute53ResolverSecurityGroup
+      Tags: 
+        - 
+          Key: Deployment-Stack
+          Value: !Sub ${AWS::StackName}
+
+
+# Route53 Resolver Forwarding Rule
+  rRoute53OutboundResolverRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties: 
+      DomainName: !ImportValue eMSDirectoryName
+      Name: Route53OutboundResolverRule
+      ResolverEndpointId: !Ref rRoute53OutboundResolver
+      RuleType: FORWARD 
+      Tags: 
+        - 
+          Key: Deployment-Stack
+          Value: !Sub ${AWS::StackName}
+      TargetIps:
+        - 
+          Ip: !ImportValue eMSDirectoryDNSPrim
+          Port: 53
+        -  
+          Ip: !ImportValue eMSDirectoryDNSSecond
+          Port: 53
+
+# Route53 Outbound Resolver Rule Association
+  rRoute53OutboundResolverRuleAssociation:
+    Type: AWS::Route53Resolver::ResolverRuleAssociation
+    Properties: 
+      Name: Route53OutboundResolverRuleAssociation
+      ResolverRuleId: !Ref rRoute53OutboundResolverRule
+      VPCId: !ImportValue eAppVPCID
+
+
+# Security Group for SSM endpoints
+  rSSMEndpointSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SG for SSM endpoints
+      VpcId: !ImportValue eAppVPCID
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          DestinationSecurityGroupId: !GetAtt rAppInstanceSecurityGroup.GroupId
+          FromPort: 3389
+          ToPort: 3389
+          Description: allow connections over RDP to instance through endpoint
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          SourceSecurityGroupId: !GetAtt rAppInstanceSecurityGroup.GroupId
+          FromPort: 443
+          ToPort: 443
+          Description: Allow connection to ssm endpoint from the instance (SSM agent)
+
+# SSM Endpoints
+  # SSM Endpoint      
+  rSSMEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PrivateDnsEnabled: true
+      SecurityGroupIds: 
+        - !Ref rSSMEndpointSG
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssm"
+      SubnetIds: 
+        - !Ref rAppPrivateSubnet1
+      VpcEndpointType: 'Interface'
+      VpcId: !ImportValue eAppVPCID
+
+  # SSM Messages Endpoint 
+  rSSMMessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PrivateDnsEnabled: true
+      SecurityGroupIds: 
+        - !Ref rSSMEndpointSG
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssmmessages"
+      SubnetIds: 
+        - !Ref rAppPrivateSubnet1
+      VpcEndpointType: 'Interface'
+      VpcId: !ImportValue eAppVPCID
+
+  # EC2 Messages Endpoint
+  rEC2MessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PrivateDnsEnabled: true
+      SecurityGroupIds: 
+        - !Ref rSSMEndpointSG
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ec2messages"
+      SubnetIds: 
+        - !Ref rAppPrivateSubnet1
+      VpcEndpointType: 'Interface'
+      VpcId: !ImportValue eAppVPCID
+
+
+# Security group for the EC2 instance
+  rAppInstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow  to client host
+      VpcId: !ImportValue eAppVPCID
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: allow instance egress to internet (Microsoft public IPs)
+        - IpProtocol: tcp
+          FromPort: 88
+          ToPort: 88
+          CidrIp: !ImportValue eSharedVPCCIDR
+          Description: allow instance egress to AD
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: !ImportValue eSharedVPCCIDR
+          Description: allow instance egress to AD
+        - IpProtocol: tcp
+          FromPort: 389
+          ToPort: 389
+          CidrIp: !ImportValue eSharedVPCCIDR
+          Description: allow instance egress to AD
+        - IpProtocol: udp
+          FromPort: 389
+          ToPort: 389
+          CidrIp: !ImportValue eSharedVPCCIDR
+          Description: allow instance egress to AD
+        - IpProtocol: tcp
+          FromPort: 135
+          ToPort: 135
+          CidrIp: !ImportValue eSharedVPCCIDR
+          Description: allow instance egress to AD
+        - IpProtocol: tcp
+          FromPort: 49152
+          ToPort: 65535
+          CidrIp: !ImportValue eSharedVPCCIDR
+          Description: allow instance egress to AD
+        - IpProtocol: udp
+          FromPort: 49152
+          ToPort: 65535
+          CidrIp: !ImportValue eSharedVPCCIDR
+          Description: allow instance egress to AD (port range, RPC) 
+        - IpProtocol: tcp
+          FromPort: 445
+          ToPort: 445
+          CidrIp: !ImportValue eSharedVPCCIDR
+          Description: allow instance egress to AD
+        - IpProtocol: tcp
+          FromPort: 123
+          ToPort: 123
+          CidrIp: !ImportValue eSharedVPCCIDR
+          Description: allow instance egress to AD
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          CidrIp: !ImportValue eAppVPCCIDR
+          FromPort: 80
+          ToPort: 80
+          Description: Allow TCP traffic from load balancer
+        - IpProtocol: tcp
+          FromPort: 88
+          ToPort: 88
+          CidrIp: !ImportValue eSharedVPCCIDR
+          Description: allow instance ingress from AD
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: !ImportValue eSharedVPCCIDR
+          Description: allow instance ingress from AD
+        - IpProtocol: tcp
+          FromPort: 389
+          ToPort: 389
+          CidrIp: !ImportValue eSharedVPCCIDR
+          Description: allow instance ingress from AD
+        - IpProtocol: udp
+          FromPort: 389
+          ToPort: 389
+          CidrIp: !ImportValue eSharedVPCCIDR
+          Description: allow instance ingress from AD
+        - IpProtocol: tcp
+          FromPort: 135
+          ToPort: 135
+          CidrIp: !ImportValue eSharedVPCCIDR
+          Description: allow instance ingress from AD
+        - IpProtocol: tcp
+          FromPort: 49152
+          ToPort: 65535
+          CidrIp: !ImportValue eSharedVPCCIDR
+          Description: allow instance ingress from AD (port range, RPC) 
+        - IpProtocol: udp
+          FromPort: 49152
+          ToPort: 65535
+          CidrIp: !ImportValue eSharedVPCCIDR
+          Description: allow instance ingress from AD
+        - IpProtocol: tcp
+          FromPort: 445
+          ToPort: 445
+          CidrIp: !ImportValue eSharedVPCCIDR
+          Description: allow instance ingress from AD
+        - IpProtocol: tcp
+          FromPort: 123
+          ToPort: 123
+          CidrIp: !ImportValue eSharedVPCCIDR
+          Description: allow instance ingress from AD     
+
+# Set up role and profile for accessing the imported directory service and installation data
+
+  rInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/AmazonSSMDirectoryServiceAccess
+        - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+
+  rAppWindowsInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+       - Ref: rInstanceRole
+
+# Windows EC2 instance
+  rAppWindowsEC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      IamInstanceProfile: !Ref rAppWindowsInstanceProfile 
+      ImageId: ami-01438d6029c106183 #newest windows server 2022
+      InstanceType: m4.4xlarge
+      KeyName: !Ref pKeyName
+      SecurityGroupIds: 
+        - !Ref rAppInstanceSecurityGroup
+      SubnetId: !Ref rAppPrivateSubnet1
+      UserData:
+        Fn::Base64: !Sub 
+          - |
+            <powershell>
+            cd C:\\
+            Read-S3Object -BucketName ${bucketname} -Key webserver.txt -File ./webserver.ps1
+            ./webserver.ps1
+            </powershell>
+            <persist>true</persist>
+          - bucketname: !Select [ 5 , !Split [':', !ImportValue eAssetsS3Bucket ]]
+
+# SSM Association that joins the EC2 instance to the directory 
+
+  DirectoryServiceAssociation:
+    Type: AWS::SSM::Association
+    Properties:
+      AssociationName: !Join [ "-" , [ !Select [2, !Split ['/', !Ref AWS::StackId]], aws-join-directory-service-domain-association]]
+      Name: AWS-JoinDirectoryServiceDomain
+      Parameters:
+        directoryId: 
+          - !ImportValue eMSDirectoryID
+        directoryName: 
+          - !ImportValue eMSDirectoryName
+      Targets:
+        - Key: InstanceIds
+          Values:
+            - !Ref rAppWindowsEC2Instance
+
+# Add Application Load Balancer to the public subnet to allow access to EC2 port 80
+
+# create target group to place the EC2 instance into
+  rAppTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      TargetType: instance
+      Targets:
+        - Id: !Ref rAppWindowsEC2Instance
+      Protocol: HTTP
+      Port: 80
+      VpcId: !ImportValue eAppVPCID
+
+  rAppLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn: rAppLoadBalancerAccessLogsBucketPolicy
+    Properties:
+      Scheme: internet-facing
+      Subnets:
+        - !Ref rAppPublicSubnet1
+        - !Ref rAppPublicSubnet2
+      SecurityGroups:
+        - !Ref rAppLoabBalancerSecurityGroup
+      LoadBalancerAttributes:
+        - Key: access_logs.s3.enabled
+          Value: 'true'
+        - Key: access_logs.s3.bucket 
+          Value: !Ref rAppLoadBalancerAccessLogsBucket
+        - Key: access_logs.s3.prefix
+          Value: !Sub "${AWS::StackName}-ALB"
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-AppLoadBalancer
+      
+  rAppHTTPSListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref rAppLoadBalancer
+      Certificates:
+        - CertificateArn: !Ref pCertificate
+      Port: 443
+      Protocol: HTTPS
+      DefaultActions:
+        - TargetGroupArn: !Ref rAppTargetGroup
+          Type: forward
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      
+  rAppLoadBalancerAccessLogsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Join [ "-", [ "ff-dpath-logs-bucket", !Select [2, !Split ['/', !Ref AWS::StackId]] ] ]
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: 'true'
+            ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+
+  rAppLoadBalancerAccessLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref rAppLoadBalancerAccessLogsBucket
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action: 
+              - 's3:PutObject'
+            Effect: Allow
+            Resource: !Join
+              - ''
+              - - 'arn:aws:s3:::'
+                - !Sub ${rAppLoadBalancerAccessLogsBucket}
+                - '/'
+                - !Sub ${AWS::StackName}-ALB
+                - '/AWSLogs/'
+                - !Ref AWS::AccountId
+                - '/*'
+            Principal: 
+              AWS: 'arn:aws:iam::652711504416:root'
+
+# Add a security group for the Application Load Balancer
+  rAppLoabBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: protect the application gateway
+      VpcId: !ImportValue eAppVPCID
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          DestinationSecurityGroupId: !GetAtt rAppInstanceSecurityGroup.GroupId
+          Description: Allow connection from LB to instance
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0    
+          Description: Allow connection from anywhere on the internet to LB on port 443
+
+# Create Alias record in Route53 public hosted zone pointing at the Application Load Balancer
+  rDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref pAppHostedZone
+      Comment: Alias record for my ALB
+      Name: !Join [ "", [ !Ref pAppDemoSubDomain, . ,!Ref pAppDemoDomain, . ] ]
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt rAppLoadBalancer.DNSName
+        EvaluateTargetHealth: false
+        HostedZoneId: !GetAtt rAppLoadBalancer.CanonicalHostedZoneID
+
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      RouteTableIds:
+        - !Ref rAppPrivateRouteTable
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcId: !ImportValue eAppVPCID

@@ -539,7 +539,7 @@ Resources:
                 - !Ref AWS::AccountId
                 - '/*'
             Principal: 
-              AWS: 'arn:aws:iam::652711504416:root'
+              AWS: 'arn:aws:iam::056047117217:root'
 
 # Add a security group for the Application Load Balancer
   rAppLoabBalancerSecurityGroup:

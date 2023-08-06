@@ -7,7 +7,7 @@ Description: Provision VPC with 2 private subnets, AWS Managed Active Directory,
 #This file is Amazon Web Services Content and may not be duplicated or distributed without permission.
 
 Metadata:
-# The optional "Metadata" section can be used to include arbitrary objects that provide
+# The optional "Metadata" section can be used to include arbitrary objects that provide 
 # details about the template.
 # For more details, see: 
 # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/metadata-section-structure.html

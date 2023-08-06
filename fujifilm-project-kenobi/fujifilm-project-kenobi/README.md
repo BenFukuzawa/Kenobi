@@ -37,8 +37,8 @@ https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/create-key-pairs.html
 
 ### Step-by-step instructions
 
-1. Clone the repository to your local directory. 
-2. Set up the underlying networking and directory services using the cloudformation template `templates/DPath_VPCs.yaml`. Customise the input parameters as necessary.
+1. Clone the repository to your local directory.
+2. Set up the underlying networking and directory services using the cloudformation template `templates/DPath_VPCs.yaml`. Customise the input parameters as necessary. 
 3. Once the template has been deployed, upload the file `userdata/webserver.txt` to the s3 bucket created by the template in point 2. This will provice with the networking and directory service required to set up all subsequent demo systems.
 4. Deploy the demo application stack `templates/DPath_Demo_App.yaml` filling out the required parameters.
 5. After the final template is deployed, you should be able to see the test web server through the URI you've selected.
